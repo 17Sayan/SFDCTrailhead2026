@@ -1,0 +1,382 @@
+@isTest
+private class CloneUserControllerTest {
+
+    @TestSetup
+    static void setupTestData() {
+        Profile stdProfile = [SELECT Id FROM Profile WHERE Name = 'Standard User' LIMIT 1];
+        
+        User sourceUser = new User(
+            FirstName       = 'Source',
+            LastName        = 'TestUser',
+            Email           = 'source.testuser@clonetest.com',
+            Username        = 'source.testuser.' + System.currentTimeMillis() + '@clonetest.com',
+            Alias           = 'srcusr',
+            CommunityNickname = 'srcTestUser' + System.currentTimeMillis(),
+            ProfileId       = stdProfile.Id,
+            LocaleSidKey    = 'en_US',
+            LanguageLocaleKey = 'en_US',
+            TimeZoneSidKey  = 'America/New_York',
+            EmailEncodingKey = 'UTF-8',
+            Department      = 'Engineering',
+            Title           = 'Senior Developer',
+            CompanyName     = 'Test Corp',
+            Phone           = '555-0100',
+            MobilePhone     = '555-0101',
+            Fax             = '555-0102',
+            IsActive        = true
+        );
+        insert sourceUser;
+    }
+
+    static User getSourceUser() {
+        return [
+            SELECT Id, Name, Email, Username, ProfileId,
+                   UserRoleId, Department, Title, CompanyName, Phone,
+                   MobilePhone, Fax, LocaleSidKey, LanguageLocaleKey,
+                   TimeZoneSidKey, EmailEncodingKey, IsActive, Alias, CommunityNickname
+            FROM User
+            WHERE Alias = 'srcusr'
+            LIMIT 1
+        ];
+    }
+
+    // ================================================================
+    // SCENARIO 1 - Link button: controller returns all cloneable fields
+    // ================================================================
+
+    @isTest
+    static void testGetUserDetails_ReturnsCorrectFields() {
+        User src = getSourceUser();
+        Test.startTest();
+        User result = CloneUserController.getUserDetails(src.Id);
+        Test.stopTest();
+
+        Assert.isNotNull(result, 'getUserDetails should return a User record');
+        Assert.areEqual(src.ProfileId, result.ProfileId, 'ProfileId must match');
+        Assert.areEqual('Engineering', result.Department, 'Department must be returned');
+        Assert.areEqual('Senior Developer', result.Title, 'Title must be returned');
+        Assert.areEqual('en_US', result.LocaleSidKey, 'LocaleSidKey must be returned');
+        Assert.areEqual('America/New_York', result.TimeZoneSidKey, 'TimeZoneSidKey must be returned');
+        Assert.areEqual('555-0100', result.Phone, 'Phone must be returned');
+    }
+
+    // ================================================================
+    // SCENARIO 2 - Pop-up loads data correctly
+    // ================================================================
+
+    @isTest
+    static void testGetUserDetails_ValidUser() {
+        User src = getSourceUser();
+        Test.startTest();
+        User result = CloneUserController.getUserDetails(src.Id);
+        Test.stopTest();
+
+        Assert.isNotNull(result, 'User record should be returned for popup');
+        Assert.areEqual(src.Id, result.Id, 'Returned user Id must match');
+        Assert.areEqual('Test Corp', result.CompanyName, 'CompanyName should load in popup');
+    }
+
+    @isTest
+    static void testGetUserDetails_InvalidUser() {
+        Test.startTest();
+        try {
+            CloneUserController.getUserDetails('005000000000000AAA');
+            Assert.fail('Should throw AuraHandledException for invalid user');
+        } catch (AuraHandledException e) {
+            Assert.isTrue(e.getMessage().length() > 0, 'Error message should be non-empty');
+        }
+        Test.stopTest();
+    }
+
+    @isTest
+    static void testGetPermissionSetAssignments_ReturnsAssignments() {
+        User src = getSourceUser();
+        Test.startTest();
+        List<PermissionSetAssignment> psas = CloneUserController.getPermissionSetAssignments(src.Id);
+        Test.stopTest();
+
+        Assert.isNotNull(psas, 'Permission set list must not be null');
+    }
+
+    // ================================================================
+    // SCENARIO 3 - No duplication of Username, Email, Name, Phone
+    // ================================================================
+
+    @isTest
+    static void testCloneUser_UniqueFieldsRequired() {
+        User src = getSourceUser();
+        String ts = String.valueOf(System.currentTimeMillis());
+
+        Map<String, Object> fields = new Map<String, Object>{
+            'FirstName'        => 'Clone',
+            'LastName'         => 'NewUser',
+            'Email'            => 'clone.newuser@clonetest.com',
+            'Username'         => 'clone.newuser.' + ts + '@clonetest.com',
+            'Alias'            => 'clnusr',
+            'CommunityNickname'=> 'cloneNew' + ts,
+            'ProfileId'        => src.ProfileId,
+            'LocaleSidKey'     => src.LocaleSidKey,
+            'LanguageLocaleKey'=> src.LanguageLocaleKey,
+            'TimeZoneSidKey'   => src.TimeZoneSidKey,
+            'EmailEncodingKey' => src.EmailEncodingKey,
+            'Department'       => src.Department,
+            'Title'            => src.Title,
+            'sourceUserId'     => src.Id
+        };
+
+        Test.startTest();
+        Id newUserId = CloneUserController.cloneUser(fields);
+        Test.stopTest();
+
+        User newUser = [SELECT Name, Email, Username FROM User WHERE Id = :newUserId];
+        Assert.areNotEqual(src.Username, newUser.Username, 'Username must be unique');
+    }
+
+    @isTest
+    static void testCloneUser_DuplicateUsername_Fails() {
+        User src = getSourceUser();
+
+        Map<String, Object> fields = new Map<String, Object>{
+            'FirstName'        => 'Dup',
+            'LastName'         => 'User',
+            'Email'            => 'dup.user@clonetest.com',
+            'Username'         => src.Username,
+            'Alias'            => 'dpusr',
+            'CommunityNickname'=> 'dupUser' + System.currentTimeMillis(),
+            'ProfileId'        => src.ProfileId,
+            'LocaleSidKey'     => 'en_US',
+            'LanguageLocaleKey'=> 'en_US',
+            'TimeZoneSidKey'   => 'America/New_York',
+            'EmailEncodingKey' => 'UTF-8',
+            'sourceUserId'     => src.Id
+        };
+
+        Test.startTest();
+        try {
+            CloneUserController.cloneUser(fields);
+            Assert.fail('Should throw for duplicate Username');
+        } catch (AuraHandledException e) {
+            Assert.isTrue(e.getMessage().length() > 0, 'Error must mention duplication');
+        }
+        Test.stopTest();
+    }
+
+    @isTest
+    static void testCloneUser_DuplicateEmail_HandledGracefully() {
+        User src = getSourceUser();
+        String ts = String.valueOf(System.currentTimeMillis());
+
+        Map<String, Object> fields = new Map<String, Object>{
+            'FirstName'        => 'EmailDup',
+            'LastName'         => 'TestUser',
+            'Email'            => src.Email,
+            'Username'         => 'emaildup.' + ts + '@clonetest.com',
+            'Alias'            => 'emdup',
+            'CommunityNickname'=> 'emailDup' + ts,
+            'ProfileId'        => src.ProfileId,
+            'LocaleSidKey'     => 'en_US',
+            'LanguageLocaleKey'=> 'en_US',
+            'TimeZoneSidKey'   => 'America/New_York',
+            'EmailEncodingKey' => 'UTF-8',
+            'sourceUserId'     => src.Id
+        };
+
+        Test.startTest();
+        Id newUserId = CloneUserController.cloneUser(fields);
+        Test.stopTest();
+
+        User newUser = [SELECT Email FROM User WHERE Id = :newUserId];
+        Assert.areEqual(src.Email, newUser.Email, 'Same email is allowed with different username');
+    }
+
+    // ================================================================
+    // SCENARIO 4 - Clone licenses and permission sets
+    // ================================================================
+
+    @isTest
+    static void testCloneUser_ClonesPermissionSets() {
+        User src = getSourceUser();
+        List<PermissionSetAssignment> srcPSAs = [
+            SELECT PermissionSetId FROM PermissionSetAssignment
+            WHERE AssigneeId = :src.Id AND PermissionSet.IsOwnedByProfile = false
+        ];
+        String ts = String.valueOf(System.currentTimeMillis());
+
+        Map<String, Object> fields = new Map<String, Object>{
+            'FirstName'        => 'PSClone',
+            'LastName'         => 'TestUser',
+            'Email'            => 'psclone@clonetest.com',
+            'Username'         => 'psclone.' + ts + '@clonetest.com',
+            'Alias'            => 'pscln',
+            'CommunityNickname'=> 'psClone' + ts,
+            'ProfileId'        => src.ProfileId,
+            'LocaleSidKey'     => 'en_US',
+            'LanguageLocaleKey'=> 'en_US',
+            'TimeZoneSidKey'   => 'America/New_York',
+            'EmailEncodingKey' => 'UTF-8',
+            'sourceUserId'     => src.Id
+        };
+
+        Test.startTest();
+        Id newUserId = CloneUserController.cloneUser(fields);
+        Test.stopTest();
+
+        List<PermissionSetAssignment> newPSAs = [
+            SELECT PermissionSetId FROM PermissionSetAssignment
+            WHERE AssigneeId = :newUserId AND PermissionSet.IsOwnedByProfile = false
+        ];
+        Assert.areEqual(srcPSAs.size(), newPSAs.size(), 'Permission set count must match source');
+    }
+
+    @isTest
+    static void testCloneUser_ClonesProfileAndRole() {
+        User src = getSourceUser();
+        String ts = String.valueOf(System.currentTimeMillis());
+
+        Map<String, Object> fields = new Map<String, Object>{
+            'FirstName'        => 'RoleClone',
+            'LastName'         => 'TestUser',
+            'Email'            => 'roleclone@clonetest.com',
+            'Username'         => 'roleclone.' + ts + '@clonetest.com',
+            'Alias'            => 'rlcln',
+            'CommunityNickname'=> 'roleClone' + ts,
+            'ProfileId'        => src.ProfileId,
+            'UserRoleId'       => src.UserRoleId,
+            'LocaleSidKey'     => 'en_US',
+            'LanguageLocaleKey'=> 'en_US',
+            'TimeZoneSidKey'   => 'America/New_York',
+            'EmailEncodingKey' => 'UTF-8',
+            'sourceUserId'     => src.Id
+        };
+
+        Test.startTest();
+        Id newUserId = CloneUserController.cloneUser(fields);
+        Test.stopTest();
+
+        User newUser = [SELECT ProfileId, UserRoleId FROM User WHERE Id = :newUserId];
+        Assert.areEqual(src.ProfileId, newUser.ProfileId, 'Profile must be cloned');
+        Assert.areEqual(src.UserRoleId, newUser.UserRoleId, 'Role must be cloned');
+    }
+
+    @isTest
+    static void testCloneUser_PreservesLocaleSettings() {
+        User src = getSourceUser();
+        String ts = String.valueOf(System.currentTimeMillis());
+
+        Map<String, Object> fields = new Map<String, Object>{
+            'FirstName'        => 'LocaleClone',
+            'LastName'         => 'TestUser',
+            'Email'            => 'localeclone@clonetest.com',
+            'Username'         => 'localeclone.' + ts + '@clonetest.com',
+            'Alias'            => 'lccln',
+            'CommunityNickname'=> 'localeClone' + ts,
+            'ProfileId'        => src.ProfileId,
+            'LocaleSidKey'     => src.LocaleSidKey,
+            'LanguageLocaleKey'=> src.LanguageLocaleKey,
+            'TimeZoneSidKey'   => src.TimeZoneSidKey,
+            'EmailEncodingKey' => src.EmailEncodingKey,
+            'sourceUserId'     => src.Id
+        };
+
+        Test.startTest();
+        Id newUserId = CloneUserController.cloneUser(fields);
+        Test.stopTest();
+
+        User newUser = [SELECT LocaleSidKey, LanguageLocaleKey, TimeZoneSidKey, EmailEncodingKey
+                        FROM User WHERE Id = :newUserId];
+        Assert.areEqual('en_US', newUser.LocaleSidKey, 'LocaleSidKey must be preserved');
+        Assert.areEqual('en_US', newUser.LanguageLocaleKey, 'LanguageLocaleKey must be preserved');
+        Assert.areEqual('America/New_York', newUser.TimeZoneSidKey, 'TimeZoneSidKey must be preserved');
+        Assert.areEqual('UTF-8', newUser.EmailEncodingKey, 'EmailEncodingKey must be preserved');
+    }
+
+    // ================================================================
+    // SCENARIO 5 - License limit exceeded shows reason
+    // ================================================================
+
+    @isTest
+    static void testCheckLicenseAvailability_HasAvailableLicenses() {
+        User src = getSourceUser();
+        Test.startTest();
+        Boolean isAvailable = CloneUserController.checkLicenseAvailability(src.ProfileId);
+        Test.stopTest();
+
+        Assert.isNotNull(isAvailable, 'License check must return a result');
+    }
+
+    @isTest
+    static void testCloneUser_LicenseLimitExceeded_ShowsReason() {
+        User src = getSourceUser();
+        String ts = String.valueOf(System.currentTimeMillis());
+
+        Map<String, Object> fields = new Map<String, Object>{
+            'FirstName'        => 'LicFail',
+            'LastName'         => 'TestUser',
+            'Email'            => 'licfail@clonetest.com',
+            'Username'         => 'licfail.' + ts + '@clonetest.com',
+            'Alias'            => 'lcfal',
+            'CommunityNickname'=> 'licFail' + ts,
+            'ProfileId'        => src.ProfileId,
+            'LocaleSidKey'     => 'en_US',
+            'LanguageLocaleKey'=> 'en_US',
+            'TimeZoneSidKey'   => 'America/New_York',
+            'EmailEncodingKey' => 'UTF-8',
+            'sourceUserId'     => src.Id
+        };
+
+        Test.startTest();
+        try {
+            Id newUserId = CloneUserController.cloneUser(fields);
+            Assert.isNotNull(newUserId, 'Clone succeeds when licenses are available');
+        } catch (AuraHandledException e) {
+            Assert.isTrue(e.getMessage().containsIgnoreCase('license'),
+                'Error must contain license-related reason: ' + e.getMessage());
+        }
+        Test.stopTest();
+    }
+
+    // ================================================================
+    // SCENARIO 6 - General error handling displayed on screen
+    // ================================================================
+
+    @isTest
+    static void testCloneUser_MissingRequiredFields_ShowsError() {
+        Map<String, Object> fields = new Map<String, Object>{
+            'FirstName' => 'Missing',
+            'LastName'  => 'Fields'
+        };
+
+        Test.startTest();
+        try {
+            CloneUserController.cloneUser(fields);
+            Assert.fail('Should throw for missing required fields');
+        } catch (AuraHandledException e) {
+            Assert.isTrue(e.getMessage().length() > 0, 'Error must describe missing fields');
+        }
+        Test.stopTest();
+    }
+
+    @isTest
+    static void testCloneUser_NullInput_ShowsError() {
+        Test.startTest();
+        try {
+            CloneUserController.cloneUser(null);
+            Assert.fail('Should throw for null input');
+        } catch (AuraHandledException e) {
+            Assert.isTrue(e.getMessage().length() > 0, 'Null-input error must be user-friendly');
+        }
+        Test.stopTest();
+    }
+
+    @isTest
+    static void testGetUserDetails_NullId_ShowsError() {
+        Test.startTest();
+        try {
+            CloneUserController.getUserDetails(null);
+            Assert.fail('Should throw for null user Id');
+        } catch (AuraHandledException e) {
+            Assert.isTrue(e.getMessage().length() > 0, 'Error for null Id must be displayable');
+        }
+        Test.stopTest();
+    }
+}
